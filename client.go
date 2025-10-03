@@ -2,6 +2,7 @@ package envoyerapi
 
 import (
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -18,38 +19,55 @@ type Client struct {
 	httpClient *http.Client
 	auth       Auth
 	userAgent  string
+	logger     *slog.Logger
 }
 
-type options func(*Client)
+type options func(*Client) error
 
 func WithBaseUrl(baseUrl string) options {
-	return func(c *Client) {
+	return func(c *Client) error {
 		parsed, err := url.Parse(baseUrl)
 		if err == nil {
-			panic(err)
+			return err
 		}
 		c.baseUrl = parsed
+
+		return nil
 	}
 }
 
 func WithAuth(auth Auth) options {
-	return func(c *Client) {
+	return func(c *Client) error {
 		c.auth = auth
+
+		return nil
 	}
 }
 
 func WithUserAgent(userAgent *string) options {
-	return func(c *Client) {
+	return func(c *Client) error {
 		if userAgent == nil {
 			c.userAgent = DefaultUserAgent
 		} else {
 			c.userAgent = *userAgent
 		}
+
+		return nil
+	}
+}
+
+func WithLogger(logger *slog.Logger) options {
+	return func(c *Client) error {
+		newHandler := NewRedactHandler(logger.Handler(), "Authorization")
+
+		c.logger = slog.New(newHandler)
+
+		return nil
 	}
 }
 
 func WithDefaultClient() options {
-	return func(c *Client) {
+	return func(c *Client) error {
 		c.httpClient = &http.Client{
 			Timeout: 3 * time.Second,
 			Transport: &http.Transport{
@@ -67,35 +85,50 @@ func WithDefaultClient() options {
 				MaxResponseHeaderBytes: 1 << 20, // 1 MiB
 			},
 		}
+
+		return nil
 	}
 }
 
 func WithClient(httpClient *http.Client) options {
-	return func(c *Client) {
+	return func(c *Client) error {
 		c.httpClient = httpClient
+
+		return nil
 	}
 }
 
-func NewClient(opts ...options) *Client {
+func NewClient(opts ...options) (*Client, error) {
 	client := &Client{}
 
+	var err error
 	for _, opt := range opts {
-		opt(client)
+		err = opt(client)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	if client.httpClient == nil {
-		WithDefaultClient()(client)
+		err = WithDefaultClient()(client)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	if client.baseUrl == nil {
 		parsed, err := url.Parse(DefaultBaseUrl)
 		if err != nil {
-			panic(err)
+			return nil, err
 		}
 		client.baseUrl = parsed
 	}
 
-	return client
+	if client.logger == nil {
+		client.logger = slog.New(slog.DiscardHandler)
+	}
+
+	return client, nil
 }
 
 func (c *Client) NewRequest(method string, url string, body io.Reader) (*http.Request, error) {
